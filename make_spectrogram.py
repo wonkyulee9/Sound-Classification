@@ -38,6 +38,6 @@ for x in range(1, len(metadata)):
     '''
     
 for x in range(10):
-    with open('/mnt/hdd2/wonkyu/Spectrograms/spec'+str(x)+'.dat', 'wb') as spf:
+    with open('/Spectrograms/spec'+str(x)+'.dat', 'wb') as spf:
         np.save(spf, specs[x])
     spf.close()
