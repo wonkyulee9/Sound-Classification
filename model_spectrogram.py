@@ -24,7 +24,7 @@ class Model:
     def save(self, global_step=None):
         var_list = [var for var in tf.all_variables()]
         saver = tf.train.Saver(var_list)
-        save_path = saver.save(self.sess, save_path="msp_5acg/acg_1", global_step=global_step)
+        save_path = saver.save(self.sess, save_path="models/spec", global_step=global_step)
         print(' * model saved at \'{}\''.format(save_path))
 
     # Load whole weights
