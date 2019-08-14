@@ -11,11 +11,12 @@ with open('UrbanSound8K/metadata/UrbanSound8K.csv') as meta_csv:
     metadata = list(csv.reader(meta_csv))
 meta_csv.close()
 
-specs = [np.empty([0, 64, 173]) for _ in range(10)]
-
+specs = np.empty([10, 0, 64, 173])
+labels = np.empty([10, 0, 10]) 
 for x in range(1, len(metadata)):
     filename, foldno, classID = metadata[x][0], int(metadata[x][5]), metadata[x][6]
-
+    
+    # Create Spectrogram
     sig, sr = librosa.load('UrbanSound8K/audio/fold'+str(foldno)+'/'+filename, sr=44100)
 
     spec = librosa.feature.melspectrogram(y=sig, sr=sr, n_fft=1024, hop_length=1024, n_mels=64, fmax=22050)
@@ -25,6 +26,12 @@ for x in range(1, len(metadata)):
 
     db_spec = librosa.power_to_db(spec, ref=np.max)
     specs[foldno-1] = np.insert((specs[foldno-1] / 40.0) + 1, len(specs[foldno-1]), db_spec[:, 0:173], axis=0)
+    
+    # Create Labels
+    label = np.zeros([10])
+    label[foldno-1] = 1
+    labels[foldno-1] = np.insert(labels[foldno-1], len(spec[foldno-1]), label, axis=0)
+    
     print(x, "audio files processed")
     
     '''
@@ -36,8 +43,13 @@ for x in range(1, len(metadata)):
     plt.tight_layout()
     plt.show()
     '''
-    
-for x in range(10):
-    with open('/Spectrograms/spec'+str(x)+'.dat', 'wb') as spf:
-        np.save(spf, specs[x])
-    spf.close()
+
+# Save spectrograms to file
+with open('/Spectrograms/spec.dat', 'wb') as spf:
+    np.save(spf, specs)
+spf.close()
+
+# Save labels to file
+with open('/Labels/labels.dat', 'wb') as lbf:
+    np.save(lbf, labels)
+lbf.close()
