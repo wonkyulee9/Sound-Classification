@@ -1,0 +1,301 @@
+import numpy as np
+import csv
+import tensorflow as tf
+
+tf_config = tf.ConfigProto()
+tf_config.gpu_options.allow_growth = True
+
+
+
+def leaky_relu(x, leak=0.1):
+    return tf.maximum(x, x * leak)
+
+
+class Model:
+
+    def __init__(self, sess, name):
+        self.sess = sess
+        self.name = name
+        self.learning_rate = tf. Variable(0.001, trainable=False)
+        self.batch_size = 80
+        self.__build_net()
+
+    def save(self, global_step=None):
+        var_list = [var for var in tf.all_variables()]
+        saver = tf.train.Saver(var_list)
+        save_path = saver.save(self.sess, save_path="models/acg", global_step=global_step)
+        print(' * model saved at \'{}\''.format(save_path))
+
+    # Load whole weights
+    def restore(self):
+        print(' - Restoring variables...')
+        var_list = [var for var in tf.all_variables()]
+        saver = tf.train.Saver(var_list)
+        saver.restore(self.sess, "models/dnn")
+        print(' * model restored ')
+
+    def __build_net(self):
+        with tf.variable_scope(self.name):
+            self.training = tf.placeholder(tf.bool)
+
+            self.X1 = tf.placeholder("float", [None, 128, 345])
+            X_input1 = tf.reshape(self.X1, [-1, 128, 345, 1])
+            self.X2 = tf.placeholder("float", [None, 5, 128, 128])
+            X_input2 = tf.reshape(self.X2, [-1, 5, 128, 128, 1])
+            x_in2_split = tf.split(X_input2, [1 for _ in range(5)], 1)
+            for x in range(5):
+                x_in2_split[x] = tf.reshape(x_in2_split[x], [-1, 128, 128, 1])
+
+            self.Y = tf.placeholder("float", [None, 10])
+
+            reg = tf.contrib.layers.l2_regularizer(0.001)
+            # Spectrogram Convolution Layers
+            spcnn = tf.layers.conv2d(inputs=X_input1, filters=32, kernel_size=[3, 7], padding="SAME",
+                                     kernel_initializer=tf.contrib.layers.xavier_initializer(), kernel_regularizer=reg)
+            spcnn = leaky_relu(tf.layers.batch_normalization(spcnn, training=self.training))
+            spcnn = tf.layers.conv2d(inputs=spcnn, filters=32, kernel_size=[3, 5], padding="SAME",
+                                     kernel_initializer=tf.contrib.layers.xavier_initializer(), kernel_regularizer=reg)
+            spcnn = leaky_relu(tf.layers.batch_normalization(spcnn, training=self.training))
+            spcnn = tf.layers.max_pooling2d(inputs=spcnn, pool_size=[4, 4], padding="SAME", strides=[4, 4])
+            # Output size: 32, 87, 32
+
+            spcnn = tf.layers.conv2d(inputs=spcnn, filters=64, kernel_size=[3, 1], padding="SAME",
+                                     kernel_initializer=tf.contrib.layers.xavier_initializer(), kernel_regularizer=reg)
+            spcnn = leaky_relu(tf.layers.batch_normalization(spcnn, training=self.training))
+            spcnn = tf.layers.conv2d(inputs=spcnn, filters=64, kernel_size=[3, 1], padding="SAME",
+                                     kernel_initializer=tf.contrib.layers.xavier_initializer(), kernel_regularizer=reg)
+            spcnn = leaky_relu(tf.layers.batch_normalization(spcnn, training=self.training))
+            spcnn = tf.layers.max_pooling2d(inputs=spcnn, pool_size=[4, 1], padding="SAME", strides=[4, 1])
+            # Output size: 8, 87, 64
+
+            spcnn = tf.layers.conv2d(inputs=spcnn, filters=128, kernel_size=[1, 5], padding="SAME",
+                                     kernel_initializer=tf.contrib.layers.xavier_initializer(), kernel_regularizer=reg)
+            spcnn = leaky_relu(tf.layers.batch_normalization(spcnn, training=self.training))
+            spcnn = tf.layers.conv2d(inputs=spcnn, filters=128, kernel_size=[1, 5], padding="SAME",
+                                     kernel_initializer=tf.contrib.layers.xavier_initializer(), kernel_regularizer=reg)
+            spcnn = leaky_relu(tf.layers.batch_normalization(spcnn, training=self.training))
+            spcnn = tf.layers.max_pooling2d(inputs=spcnn, pool_size=[1, 3], padding="SAME", strides=[1, 3])
+            # Output size: 8, 29, 128
+
+            spcnn = tf.layers.conv2d(inputs=spcnn, filters=256, kernel_size=[3, 3], padding="SAME",
+                                     kernel_initializer=tf.contrib.layers.xavier_initializer(), kernel_regularizer=reg)
+            spcnn = leaky_relu(tf.layers.batch_normalization(spcnn, training=self.training))
+            spcnn = tf.layers.conv2d(inputs=spcnn, filters=256, kernel_size=[3, 3], padding="SAME",
+                                     kernel_initializer=tf.contrib.layers.xavier_initializer(), kernel_regularizer=reg)
+            spcnn = leaky_relu(tf.layers.batch_normalization(spcnn, training=self.training))
+            spcnn = tf.layers.max_pooling2d(inputs=spcnn, pool_size=[2, 2], padding="SAME", strides=2)
+            # Output size: 4, 15, 256
+
+            # Correlogram Convolution Layers
+            cgcnn = [0 for _ in range(5)]
+
+            with tf.variable_scope('cg_convs'):
+                cgcnn[0] = tf.layers.conv2d(inputs=x_in2_split[0], filters=16, kernel_size=[3, 7], padding="SAME",
+                                            kernel_initializer=tf.contrib.layers.xavier_initializer(), name='conv1', kernel_regularizer=reg)
+                cgcnn[0] = leaky_relu(tf.layers.batch_normalization(cgcnn[0], training=self.training, name='bn1'))
+                cgcnn[0] = tf.layers.conv2d(inputs=cgcnn[0], filters=16, kernel_size=[3, 5], padding="SAME",
+                                            kernel_initializer=tf.contrib.layers.xavier_initializer(), name='conv2', kernel_regularizer=reg)
+                cgcnn[0] = leaky_relu(tf.layers.batch_normalization(cgcnn[0], training=self.training, name='bn2'))
+                cgcnn[0] = tf.layers.max_pooling2d(inputs=cgcnn[0], pool_size=[4, 3], padding="SAME", strides=[4, 3])
+                # Output size: 32, 43, 32
+
+                cgcnn[0] = tf.layers.conv2d(inputs=cgcnn[0], filters=32, kernel_size=[3, 1], padding="SAME",
+                                            kernel_initializer=tf.contrib.layers.xavier_initializer(), name='conv3', kernel_regularizer=reg)
+                cgcnn[0] = leaky_relu(tf.layers.batch_normalization(cgcnn[0], training=self.training, name='bn3'))
+                cgcnn[0] = tf.layers.conv2d(inputs=cgcnn[0], filters=32, kernel_size=[3, 1], padding="SAME",
+                                            kernel_initializer=tf.contrib.layers.xavier_initializer(), name='conv4', kernel_regularizer=reg)
+                cgcnn[0] = leaky_relu(tf.layers.batch_normalization(cgcnn[0], training=self.training, name='bn4'))
+                cgcnn[0] = tf.layers.max_pooling2d(inputs=cgcnn[0], pool_size=[4, 1], padding="SAME", strides=[4, 1])
+                # Output size: 8, 43, 64
+
+                cgcnn[0] = tf.layers.conv2d(inputs=cgcnn[0], filters=64, kernel_size=[1, 5], padding="SAME",
+                                            kernel_initializer=tf.contrib.layers.xavier_initializer(), name='conv5', kernel_regularizer=reg)
+                cgcnn[0] = leaky_relu(tf.layers.batch_normalization(cgcnn[0], training=self.training, name='bn5'))
+                cgcnn[0] = tf.layers.conv2d(inputs=cgcnn[0], filters=64, kernel_size=[1, 5], padding="SAME",
+                                            kernel_initializer=tf.contrib.layers.xavier_initializer(), name='conv6', kernel_regularizer=reg)
+                cgcnn[0] = leaky_relu(tf.layers.batch_normalization(cgcnn[0], training=self.training, name='bn6'))
+                cgcnn[0] = tf.layers.max_pooling2d(inputs=cgcnn[0], pool_size=[1, 3], padding="SAME", strides=[1, 3])
+                # Output size: 8, 15, 128
+
+                cgcnn[0] = tf.layers.conv2d(inputs=cgcnn[0], filters=128, kernel_size=[3, 3], padding="SAME",
+                                            kernel_initializer=tf.contrib.layers.xavier_initializer(), name='conv7', kernel_regularizer=reg)
+                cgcnn[0] = leaky_relu(tf.layers.batch_normalization(cgcnn[0], training=self.training, name='bn7'))
+                cgcnn[0] = tf.layers.conv2d(inputs=cgcnn[0], filters=128, kernel_size=[3, 3], padding="SAME",
+                                            kernel_initializer=tf.contrib.layers.xavier_initializer(), name='conv8', kernel_regularizer=reg)
+                cgcnn[0] = leaky_relu(tf.layers.batch_normalization(cgcnn[0], training=self.training, name='bn8'))
+                cgcnn[0] = tf.layers.max_pooling2d(inputs=cgcnn[0], pool_size=[2, 2], padding="SAME", strides=2)
+                # Output size: 4, 8, 256
+
+            for x in range(1, 5):
+                with tf.variable_scope('cg_convs', reuse=True):
+                    cgcnn[x] = tf.layers.conv2d(inputs=x_in2_split[x], filters=16, kernel_size=[3, 7], padding="SAME",
+                                                kernel_initializer=tf.contrib.layers.xavier_initializer(), name='conv1', kernel_regularizer=reg)
+                    cgcnn[x] = leaky_relu(tf.layers.batch_normalization(cgcnn[x], training=self.training, name='bn1'))
+                    cgcnn[x] = tf.layers.conv2d(inputs=cgcnn[x], filters=16, kernel_size=[3, 5], padding="SAME",
+                                                kernel_initializer=tf.contrib.layers.xavier_initializer(), name='conv2', kernel_regularizer=reg)
+                    cgcnn[x] = leaky_relu(tf.layers.batch_normalization(cgcnn[x], training=self.training, name='bn2'))
+                    cgcnn[x] = tf.layers.max_pooling2d(inputs=cgcnn[x], pool_size=[4, 3], padding="SAME",
+                                                       strides=[4, 3])
+                    # Output size: 32, 43, 32
+
+                    cgcnn[x] = tf.layers.conv2d(inputs=cgcnn[x], filters=32, kernel_size=[3, 1], padding="SAME",
+                                                kernel_initializer=tf.contrib.layers.xavier_initializer(), name='conv3', kernel_regularizer=reg)
+                    cgcnn[x] = leaky_relu(tf.layers.batch_normalization(cgcnn[x], training=self.training, name='bn3'))
+                    cgcnn[x] = tf.layers.conv2d(inputs=cgcnn[x], filters=32, kernel_size=[3, 1], padding="SAME",
+                                                kernel_initializer=tf.contrib.layers.xavier_initializer(), name='conv4', kernel_regularizer=reg)
+                    cgcnn[x] = leaky_relu(tf.layers.batch_normalization(cgcnn[x], training=self.training, name='bn4'))
+                    cgcnn[x] = tf.layers.max_pooling2d(inputs=cgcnn[x], pool_size=[4, 1], padding="SAME",
+                                                       strides=[4, 1])
+                    # Output size: 8, 43, 64
+
+                    cgcnn[x] = tf.layers.conv2d(inputs=cgcnn[x], filters=64, kernel_size=[1, 5], padding="SAME",
+                                                kernel_initializer=tf.contrib.layers.xavier_initializer(), name='conv5', kernel_regularizer=reg)
+                    cgcnn[x] = leaky_relu(tf.layers.batch_normalization(cgcnn[x], training=self.training, name='bn5'))
+                    cgcnn[x] = tf.layers.conv2d(inputs=cgcnn[x], filters=64, kernel_size=[1, 5], padding="SAME",
+                                                kernel_initializer=tf.contrib.layers.xavier_initializer(), name='conv6', kernel_regularizer=reg)
+                    cgcnn[x] = leaky_relu(tf.layers.batch_normalization(cgcnn[x], training=self.training, name='bn6'))
+                    cgcnn[x] = tf.layers.max_pooling2d(inputs=cgcnn[x], pool_size=[1, 3], padding="SAME",
+                                                       strides=[1, 3])
+                    # Output size: 8, 15, 128
+
+                    cgcnn[x] = tf.layers.conv2d(inputs=cgcnn[x], filters=128, kernel_size=[3, 3], padding="SAME",
+                                                kernel_initializer=tf.contrib.layers.xavier_initializer(), name='conv7', kernel_regularizer=reg)
+                    cgcnn[x] = leaky_relu(tf.layers.batch_normalization(cgcnn[x], training=self.training, name='bn7'))
+                    cgcnn[x] = tf.layers.conv2d(inputs=cgcnn[x], filters=128, kernel_size=[3, 3], padding="SAME",
+                                                kernel_initializer=tf.contrib.layers.xavier_initializer(), name='conv8', kernel_regularizer=reg)
+                    cgcnn[x] = leaky_relu(tf.layers.batch_normalization(cgcnn[x], training=self.training, name='bn8'))
+                    cgcnn[x] = tf.layers.max_pooling2d(inputs=cgcnn[x], pool_size=[2, 2], padding="SAME", strides=2)
+                    # Output size: 4, 8, 256
+
+            cgconc = tf.concat([cgcnn[i] for i in range(5)], axis=3)
+
+            cgf = tf.layers.conv2d(inputs=cgconc, filters=256, kernel_size=[1, 1], padding="SAME",
+                                   kernel_initializer=tf.contrib.layers.xavier_initializer(), kernel_regularizer=reg)
+            cgf = leaky_relu(tf.layers.batch_normalization(cgf, training=self.training))
+
+            flat = tf.concat([tf.reshape(spcnn, [-1, 4 * 15 * 256]), tf.reshape(cgf, [-1, 4 * 8 * 256])], axis=1)
+            fc1 = tf.layers.dense(inputs=flat, units=512, kernel_initializer=tf.contrib.layers.xavier_initializer(), kernel_regularizer=reg)
+            fc1 = leaky_relu(fc1)
+            dropout4 = tf.layers.dropout(inputs=fc1, rate=0.5, training=self.training)
+            self.logits = tf.layers.dense(inputs=dropout4, units=10, kernel_regularizer=reg)
+
+        reg_loss = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
+        self.loss = tf.reduce_mean(tf.nn.softmax_cross_entropy_with_logits(logits=self.logits, labels=self.Y)) + tf.reduce_sum(reg_loss)
+        self.update_ops = tf.get_collection(tf.GraphKeys.UPDATE_OPS)
+        with tf.control_dependencies(self.update_ops):
+            self.optimizer = tf.train.MomentumOptimizer(learning_rate=self.learning_rate, momentum=0.9, use_nesterov=True).minimize(self.loss)
+
+        correct_prediction = tf.equal(tf.argmax(self.logits, 1), tf.argmax(self.Y, 1))
+        self.accuracy = tf.reduce_mean(tf.cast(correct_prediction, "float"))
+
+    def predict(self, x_test1, x_test2, training=False):
+        return self.sess.run(self.logits, feed_dict={self.X1: x_test1, self.X2: x_test2, self.training: training})
+
+    def get_accuracy(self, x_test1, x_test2, y_test, training=False):
+        return self.sess.run(self.accuracy,
+                             feed_dict={self.X1: x_test1, self.X2: x_test2, self.Y: y_test, self.training: training})
+
+    def train(self, x_data1, x_data2, y_data, training=True):
+        return self.sess.run([self.loss, self.optimizer, self.accuracy],
+                             feed_dict={self.X1: x_data1, self.X2: x_data2, self.Y: y_data, self.training: training})
+
+    def val_test_acc(self, spec, labels, fold):
+        accuracy = 0
+        dsize = 0
+
+        with open('/mnt/hdd2/wonkyu/final/acg_test' + str(fold) + '.dat', 'rb') as spf:
+            acg = np.load(spf)
+        spf.close()
+
+        for i in range((len(labels[fold]) // self.batch_size) + 1):
+            if i == len(labels[fold]) // self.batch_size:
+                a = self.get_accuracy(spec[fold][i * self.batch_size:], acg[i * self.batch_size:],
+                                      labels[fold][i * self.batch_size:])
+                accuracy += a * len(labels[fold][i * self.batch_size:])
+                dsize += len(labels[fold][i * self.batch_size:])
+            else:
+                a = self.get_accuracy(spec[fold][i * self.batch_size:(i + 1) * self.batch_size],
+                                      acg[i * self.batch_size:(i + 1) * self.batch_size],
+                                      labels[fold][i * self.batch_size:(i + 1) * self.batch_size])
+                accuracy += a * self.batch_size
+                dsize += self.batch_size
+        accuracy = accuracy / dsize
+        return accuracy
+
+    def train_epoch(self, spec, labels, testfold, epoch):
+        if epoch == 79 or epoch == 139:
+            self.learning_rate /= 10
+        val = (testfold + 5) % 10
+        avg_loss = 0
+        datasize = 0
+        accuracy = 0
+        for fold in range(10):
+            if fold != testfold and fold != val:
+                with open('/mnt/hdd2/wonkyu/final/acg_test' + str(fold) + '.dat', 'rb') as spf:
+                    acg = np.load(spf)
+                spf.close()
+                for i in range((len(labels[fold]) // self.batch_size) + 1):
+                    if i == len(labels[fold]) // self.batch_size:
+                        c, _, a = self.train(spec[fold][i * self.batch_size:], acg[i * self.batch_size:],
+                                          labels[fold][i * self.batch_size:])
+                        avg_loss += c * len(labels[fold][i * self.batch_size:])
+                        datasize += len(labels[fold][i * self.batch_size:])
+                        accuracy += a * len(labels[fold][i * self.batch_size:])
+                    else:
+                        c, _, a = self.train(spec[fold][i * self.batch_size:(i + 1) * self.batch_size],
+                                          acg[i * self.batch_size:(i + 1) * self.batch_size],
+                                          labels[fold][i * self.batch_size:(i + 1) * self.batch_size])
+                        avg_loss += c * self.batch_size
+                        datasize += self.batch_size
+                        accuracy += a * self.batch_size
+        avg_loss = avg_loss / datasize
+        accuracy = accuracy / datasize
+        vaccuracy = self.val_test_acc(spec, labels, val)
+        print("Epoch:", '%04d' % (epoch + 1), "loss=", avg_loss, "training accuracy=", accuracy, "val accuracy=", vaccuracy)
+
+        if epoch % 10 == 9:
+            accuracy = self.val_test_acc(spec, labels, testfold)
+            print('Accuracy:', accuracy)
+
+        return vaccuracy
+
+
+with open('Spetrograms/specs.dat', 'rb') as specfile:
+    spec = np.load(specfile)
+    spec = np.asarray(spec)
+specfile.close()
+
+with open('Labels/labels.dat', 'rb') as labfile:
+    labels = np.load(labfile)
+    labels = np.asarray(labels)
+labfile.close()
+
+print('Read spec and label success')
+
+sess = tf.Session(config=tf_config)
+
+with tf.device('/device:GPU:3'):
+    m = Model(sess, "Model")
+
+sess.run(tf.global_variables_initializer())
+
+print('Learning started.')
+
+testfold = 3
+epoch_save = 20
+
+vacc = []
+
+for epoch in range(200):
+    vacc.append(m.train_epoch(spec, labels, testfold, epoch))
+    if epoch % epoch_save == (epoch_save - 1):
+        m.save(global_step=epoch)
+
+with open('model_comb_1.csv', 'w', newline='') as vafile:
+    writer = csv.writer(vafile)
+    writer.writerows(vacc)
+vafile.close()
+
+print("Learning Finished")
+
+
